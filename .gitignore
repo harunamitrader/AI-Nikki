@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+config/*.local.json
+config/*.local.md
+data/unified/
+reports/daily/
+reports/soul-analysis/
+inputs/manual/
+generated/

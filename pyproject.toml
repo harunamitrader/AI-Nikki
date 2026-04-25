@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "AI-Nikki"
+version = "0.3.0"
+description = "Unify local AI assistant logs and generate one-day-per-file X-ready AI diaries."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "harunamitrader" }
+]
+keywords = ["ai", "diary", "logs", "copilot", "codex", "gemini", "claude", "x"]
+
+[tool.setuptools]
+packages = ["ai_nikki"]
