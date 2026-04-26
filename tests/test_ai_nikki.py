@@ -66,7 +66,10 @@ class AiNikkiTests(unittest.TestCase):
             self.assertTrue(persona_path.exists())
             text = persona_path.read_text(encoding="utf-8")
             self.assertIn("# AI-Nikki 性格設定", text)
+            self.assertIn("- 日記全体の雰囲気: 標準", text)
             self.assertIn("- 口調タイプ: 無骨な職人", text)
+            self.assertIn("## Codex", text)
+            self.assertNotIn("## Codex CLI", text)
             self.assertIn("- 個性の強調ポイント:", text)
 
     def test_ingest_then_generate_missing_diaries(self) -> None:
@@ -103,6 +106,52 @@ class AiNikkiTests(unittest.TestCase):
             posts_payload = json.loads(posts_path.read_text(encoding="utf-8"))
             ai_names = {post["ai_name"] for post in posts_payload["posts"] if post["ai_name"]}
             self.assertEqual(ai_names, {"GitHub Copilot CLI"})
+
+    def test_codex_is_merged_and_global_mood_is_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            self._write_codex_cli(fixtures)
+            self._write_codex_desktop(fixtures)
+            config_path = self._write_config(root, fixtures, enabled_sources={"codex_cli", "codex_desktop_live_log", "codex_desktop_bridge"})
+
+            self.assertEqual(main(["--config", str(config_path), "ingest"]), 0)
+            self.assertEqual(main(["--config", str(config_path), "prepare-personas", "--subject-name", "ハルナミ"]), 0)
+
+            persona_path = root / "out" / "ai-nikki-personas.local.md"
+            persona_text = persona_path.read_text(encoding="utf-8")
+            persona_text = persona_text.replace("- 日記全体の雰囲気: 標準", "- 日記全体の雰囲気: 淡々と事実のみ")
+            persona_path.write_text(persona_text, encoding="utf-8", newline="\n")
+
+            self.assertEqual(main(["--config", str(config_path), "generate-diaries"]), 0)
+
+            posts_path = root / "out" / "reports" / "2026-04-24-ai-nikki-posts.json"
+            posts_payload = json.loads(posts_path.read_text(encoding="utf-8"))
+            self.assertEqual(posts_payload["diary_mood_ja"], "淡々と事実のみ")
+            ai_names = {post["ai_name"] for post in posts_payload["posts"] if post["ai_name"]}
+            self.assertEqual(ai_names, {"Codex"})
+            self.assertNotIn("Codex CLI", ai_names)
+            self.assertNotIn("Codex Desktop", ai_names)
+
+    def test_inactive_posts_repeat_every_seven_days(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            self._write_all_fixtures(fixtures)
+            config_path = self._write_config(root, fixtures)
+
+            self.assertEqual(main(["--config", str(config_path), "ingest"]), 0)
+            self.assertEqual(main(["--config", str(config_path), "export-day", "--day", "2026-05-01"]), 0)
+            first_posts = json.loads((root / "out" / "reports" / "2026-05-01-ai-nikki-posts.json").read_text(encoding="utf-8"))
+            first_inactive = [post for post in first_posts["posts"] if post["kind"] == "inactive"]
+            self.assertTrue(first_inactive)
+
+            self.assertEqual(main(["--config", str(config_path), "export-day", "--day", "2026-05-02"]), 0)
+            second_posts = json.loads((root / "out" / "reports" / "2026-05-02-ai-nikki-posts.json").read_text(encoding="utf-8"))
+            second_inactive = [post for post in second_posts["posts"] if post["kind"] == "inactive"]
+            self.assertEqual(second_inactive, [])
 
     def test_build_soul_analysis_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

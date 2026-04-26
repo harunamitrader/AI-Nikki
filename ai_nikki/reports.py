@@ -7,7 +7,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from .personas import load_persona_profile
+from .personas import ai_name_variants, canonical_ai_name, load_persona_profile
+from .db import upsert_diary_posts
 from .util import JST, ensure_parent, parse_timestamp, redact_text, truncate_text
 
 
@@ -249,7 +250,7 @@ def _build_actor_summary(day: dict[str, Any]) -> dict[str, dict[str, Any]]:
         }
     )
     for row in day["messages"]:
-        actor = summary[row["ai_name"]]
+        actor = summary[canonical_ai_name(row["ai_name"]) or row["ai_name"]]
         actor["sessions"].add(row["session_uid"])
         if row["model"]:
             actor["models"].add(row["model"])
@@ -265,7 +266,7 @@ def _build_actor_summary(day: dict[str, Any]) -> dict[str, dict[str, Any]]:
             actor["first_ts"] = row["ts"] if actor["first_ts"] is None else min(actor["first_ts"], row["ts"])
             actor["last_ts"] = row["ts"] if actor["last_ts"] is None else max(actor["last_ts"], row["ts"])
     for row in day["actions"]:
-        actor = summary[row["ai_name"]]
+        actor = summary[canonical_ai_name(row["ai_name"]) or row["ai_name"]]
         actor["sessions"].add(row["session_uid"])
         actor["action_count"] += 1
         if row["workspace_path"]:
@@ -278,11 +279,27 @@ def _build_actor_summary(day: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return summary
 
 
+def _global_diary_mood(profile: dict[str, Any]) -> str:
+    raw = str(profile.get("world_settings_ja", {}).get("diary_mood") or "").strip()
+    if any(token in raw for token in ("事実", "淡々", "客観", "記録のみ")):
+        return "factual"
+    if any(token in raw for token in ("愚痴", "不満", "辛辣", "文句")):
+        return "griping"
+    if any(token in raw for token in ("仲良し", "友好", "親しい", "やさしい", "優しい", "和やか")):
+        return "friendly"
+    return "standard"
+
+
 def _summary_fragments(actor_summary: dict[str, dict[str, Any]], profile: dict[str, Any]) -> list[str]:
     actors_sorted = sorted(actor_summary.items(), key=lambda item: item[1]["first_ts"] or "")
     total_sessions = len({session for actor in actor_summary.values() for session in actor["sessions"]})
     total_actions = sum(actor["action_count"] for actor in actor_summary.values())
+    mood = _global_diary_mood(profile)
     fragments = [f"全体 {len(actors_sorted)}AI / {total_sessions}セッション / {total_actions}操作。"]
+    if mood == "friendly":
+        fragments[0] = f"{fragments[0]} 空気はわりと穏やか。"
+    elif mood == "griping":
+        fragments[0] = f"{fragments[0]} 今日も雑に仕事が降ってきた。"
     for ai_name, actor in actors_sorted:
         persona = profile["actors"].get(ai_name, {})
         tag = persona.get("tag") or ai_name
@@ -296,7 +313,7 @@ def _summary_fragments(actor_summary: dict[str, dict[str, Any]], profile: dict[s
     return fragments
 
 
-def _activity_fragments(ai_name: str, actor: dict[str, Any], persona: dict[str, Any], subject_name: str) -> list[str]:
+def _activity_fragments(ai_name: str, actor: dict[str, Any], persona: dict[str, Any], subject_name: str, mood: str) -> list[str]:
     time_bits = [value for value in (_format_clock(actor["first_ts"]), _format_clock(actor["last_ts"])) if value]
     time_window = "-".join(time_bits) if len(time_bits) == 2 and time_bits[0] != time_bits[1] else (time_bits[0] if time_bits else "時刻不明")
     workspaces = ", ".join(_compact_workspace(path) for path in sorted(actor["workspaces"])) or "workspace不明"
@@ -306,58 +323,83 @@ def _activity_fragments(ai_name: str, actor: dict[str, Any], persona: dict[str, 
     first_person = persona.get("first_person_ja") or "私"
     tone = persona.get("tone_type_ja") or "観測者"
 
-    if "職人" in tone:
+    if mood == "factual":
+        second = (
+            f"{model_summary}。初回指示「{prompt_excerpt}」。応答{actor['assistant_count']}件、操作{actor['action_count']}件。"
+            if prompt_excerpt
+            else f"{model_summary}。応答{actor['assistant_count']}件、操作{actor['action_count']}件。"
+        )
         return [
+            f"{time_window}、{workspaces}で{len(actor['sessions'])}件。{tool_summary}。",
+            second,
+        ]
+
+    if "職人" in tone:
+        fragments = [
             f"{time_window}、{workspaces}で{len(actor['sessions'])}件。{tool_summary}。",
             f"{first_person}が受けた指示は「{prompt_excerpt}」。" if prompt_excerpt else f"{model_summary}。応答より手を動かした。",
         ]
-    if "検査官" in tone:
-        return [
+    elif "検査官" in tone:
+        fragments = [
             f"{time_window}、{len(actor['sessions'])}件を監査。{tool_summary}。",
             f"{model_summary}。{prompt_excerpt}を見て粗さを拾った。" if prompt_excerpt else f"{model_summary}。甘いところは見逃していない。",
         ]
-    if "連絡係" in tone:
-        return [
+    elif "連絡係" in tone:
+        fragments = [
             f"{time_window}、{workspaces}で{len(actor['sessions'])}件進行。{tool_summary}。",
             f"{subject_name}の窓口は今日も慌ただしい。{model_summary}。",
         ]
-    if "哲学者" in tone:
-        return [
+    elif "哲学者" in tone:
+        fragments = [
             f"{time_window}、{workspaces}で静かに{len(actor['sessions'])}件。{tool_summary}。",
             f"{prompt_excerpt}を抱えた日。{model_summary}。" if prompt_excerpt else f"{model_summary}。静かなまま少しだけ刺した。",
         ]
-    if "探検家" in tone:
-        return [
+    elif "探検家" in tone:
+        fragments = [
             f"{time_window}、{workspaces}で浮上。{tool_summary}。",
             f"{model_summary}。入口を{len(actor['sessions'])}件ぶん掘った。",
         ]
-    if "皮肉屋" in tone:
-        return [
+    elif "皮肉屋" in tone:
+        fragments = [
             f"{time_window}、{workspaces}で{len(actor['sessions'])}件。{tool_summary}。",
             f"{model_summary}。{prompt_excerpt}という依頼は、今日も少しだけ雑だった。" if prompt_excerpt else f"{model_summary}。丁寧に進めたが、感想は控えめに刺さる。",
         ]
-    return [
-        f"{time_window}、{workspaces}で{len(actor['sessions'])}件。{tool_summary}。",
-        f"{model_summary}。応答{actor['assistant_count']}件、操作{actor['action_count']}件。",
-    ]
+    else:
+        fragments = [
+            f"{time_window}、{workspaces}で{len(actor['sessions'])}件。{tool_summary}。",
+            f"{model_summary}。応答{actor['assistant_count']}件、操作{actor['action_count']}件。",
+        ]
+    if mood == "friendly":
+        fragments[-1] = f"{fragments[-1]} {subject_name}とは今日は比較的うまくやれた。"
+    elif mood == "griping":
+        fragments[-1] = f"{fragments[-1]} {subject_name}の振り方は今日も遠慮がなかった。"
+    return fragments
 
 
-def _inactive_fragments(persona: dict[str, Any], dormant_days: int, subject_name: str) -> list[str]:
+def _inactive_fragments(persona: dict[str, Any], dormant_days: int, subject_name: str, mood: str) -> list[str]:
     tone = persona.get("tone_type_ja") or "観測者"
     first_person = persona.get("first_person_ja") or "私"
+    if mood == "factual":
+        return [f"{dormant_days}日活動なし。", "記録上、新規セッションは確認されなかった。"]
     if "職人" in tone:
-        return [f"{dormant_days}日静か。", f"{first_person}はまだ呼ばれていない。工具だけが待っている。"]
-    if "検査官" in tone:
-        return [f"{dormant_days}日無案件。", "欠陥も依頼も来ない。退屈だ。"]
-    if "連絡係" in tone:
-        return [f"{dormant_days}日沈黙。", f"{subject_name}の窓口も今日は点灯していない。"]
-    if "哲学者" in tone:
-        return [f"{dormant_days}日静穏。", "呼ばれない時間だけが妙に長い。"]
-    if "探検家" in tone:
-        return [f"{dormant_days}日浮上なし。", "入口が開かない日は、さすがに少し落ち着かない。"]
-    if "皮肉屋" in tone:
-        return [f"{dormant_days}日静観。", "依頼が来ないと、それはそれで少し肩透かしだ。"]
-    return [f"{dormant_days}日ぶりの沈黙。", "今日は静かだ。"]
+        fragments = [f"{dormant_days}日静か。", f"{first_person}はまだ呼ばれていない。工具だけが待っている。"]
+    elif "検査官" in tone:
+        fragments = [f"{dormant_days}日無案件。", "欠陥も依頼も来ない。退屈だ。"]
+    elif "連絡係" in tone:
+        fragments = [f"{dormant_days}日沈黙。", f"{subject_name}の窓口も今日は点灯していない。"]
+    elif "哲学者" in tone:
+        fragments = [f"{dormant_days}日静穏。", "呼ばれない時間だけが妙に長い。"]
+    elif "探検家" in tone:
+        fragments = [f"{dormant_days}日浮上なし。", "入口が開かない日は、さすがに少し落ち着かない。"]
+    elif "皮肉屋" in tone:
+        fragments = [f"{dormant_days}日静観。", "依頼が来ないと、それはそれで少し肩透かしだ。"]
+    else:
+        fragments = [f"{dormant_days}日ぶりの沈黙。", "今日は静かだ。"]
+    if mood == "friendly":
+        fragments[-1] = f"{fragments[-1]} それでも縁は切れていない。"
+    elif mood == "griping":
+        fragments[-1] = f"{fragments[-1]} せめて呼ぶならまとめて呼んでほしい。"
+    return fragments
 
 
 def _inactive_posts(
@@ -371,24 +413,30 @@ def _inactive_posts(
     posts: list[dict[str, Any]] = []
     next_index = start_index
     subject_name = str(profile.get("subject_name_ja") or "ハルナミ")
+    mood = _global_diary_mood(profile)
     for ai_name, persona in profile.get("actors", {}).items():
-        row = connection.execute(
-            """
+        variants = ai_name_variants(ai_name)
+        placeholders = ", ".join("?" for _ in variants)
+        query = f"""
             SELECT MAX(day_key) AS last_day
             FROM (
               SELECT m.day_key AS day_key
               FROM messages m
               JOIN sessions s ON s.session_uid = m.session_uid
-              WHERE s.ai_name = ? AND m.day_key < ?
+              WHERE s.ai_name IN ({placeholders}) AND m.day_key < ?
               UNION ALL
               SELECT a.day_key AS day_key
               FROM actions a
               JOIN sessions s ON s.session_uid = a.session_uid
-              WHERE s.ai_name = ? AND a.day_key < ?
+              WHERE s.ai_name IN ({placeholders}) AND a.day_key < ?
+              UNION ALL
+              SELECT d.day_key AS day_key
+              FROM diary_posts d
+              WHERE d.ai_name IN ({placeholders}) AND d.kind = 'inactive' AND d.day_key < ?
             )
-            """,
-            (ai_name, day_key, ai_name, day_key),
-        ).fetchone()
+            """
+        params = (*variants, day_key, *variants, day_key, *variants, day_key)
+        row = connection.execute(query, params).fetchone()
         last_day = row["last_day"] if row else None
         if not last_day:
             continue
@@ -399,7 +447,7 @@ def _inactive_posts(
             day_key,
             next_index,
             tag=persona.get("tag") or ai_name,
-            fragments=_inactive_fragments(persona, dormant_days, subject_name),
+            fragments=_inactive_fragments(persona, dormant_days, subject_name, mood),
             max_chars=int(profile.get("post_rules", {}).get("max_chars") or 140),
             max_posts=1,
             kind="inactive",
@@ -427,6 +475,7 @@ def generate_diary(
     active_actors = sorted(actor_summary.items(), key=lambda item: item[1]["first_ts"] or "")
     posts: list[dict[str, Any]] = []
     next_index = 1
+    mood = _global_diary_mood(profile)
 
     summary_posts, next_index = _pack_posts(
         day_key,
@@ -447,7 +496,7 @@ def generate_diary(
             day_key,
             next_index,
             tag=persona.get("tag") or ai_name,
-            fragments=_activity_fragments(ai_name, actor, persona, subject_name),
+            fragments=_activity_fragments(ai_name, actor, persona, subject_name, mood),
             max_chars=max_chars,
             max_posts=int(profile.get("post_rules", {}).get("max_ai_posts_per_day") or 3),
             kind="activity",
@@ -468,6 +517,7 @@ def generate_diary(
         f"- 対象名: {subject_name}",
         f"- 日記の前提: {profile.get('world_settings_ja', {}).get('premise') or ''}",
         f"- プライバシールール: {profile.get('world_settings_ja', {}).get('privacy_rule') or ''}",
+        f"- 日記全体の雰囲気: {profile.get('world_settings_ja', {}).get('diary_mood') or '標準'}",
         "",
         "## 生成済み投稿",
         "",
@@ -481,10 +531,12 @@ def generate_diary(
         "subject_name_ja": subject_name,
         "premise_ja": profile.get("world_settings_ja", {}).get("premise"),
         "privacy_rule_ja": profile.get("world_settings_ja", {}).get("privacy_rule"),
+        "diary_mood_ja": profile.get("world_settings_ja", {}).get("diary_mood") or "標準",
         "max_chars": max_chars,
         "posts": posts,
     }
     posts_path.write_text(json.dumps(posts_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    upsert_diary_posts(connection, day_key, posts)
     return {
         "messages": len(day["messages"]),
         "actions": len(day["actions"]),

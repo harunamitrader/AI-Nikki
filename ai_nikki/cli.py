@@ -215,6 +215,7 @@ def _run_generate_diaries(
             export_day_jsonl(connection, day_key, daily_path)
             generate_diary(connection, config, day_key, report_path, prompt_path, posts_path)
             generated_days.append(day_key)
+        connection.commit()
         return {
             "generated_days": generated_days,
             "skipped_days": skipped_days,
@@ -253,6 +254,7 @@ def _run_export_day(config: dict[str, Any], day_key: str) -> dict[str, Any]:
             Path(config["paths"]["report_dir"]) / f"{day_key}-ai-nikki-prompt.txt",
             Path(config["paths"]["report_dir"]) / f"{day_key}-ai-nikki-posts.json",
         )
+        connection.commit()
         return {"day_key": day_key, "records": count}
     finally:
         connection.close()

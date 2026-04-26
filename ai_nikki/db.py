@@ -101,11 +101,23 @@ CREATE TABLE IF NOT EXISTS actions (
   raw_payload TEXT
 );
 
+CREATE TABLE IF NOT EXISTS diary_posts (
+  day_key TEXT NOT NULL,
+  post_index INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  ai_name TEXT,
+  tag TEXT NOT NULL,
+  char_count INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (day_key, post_index)
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_day_key ON messages(day_key, ts, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_session_uid ON messages(session_uid, seq);
 CREATE INDEX IF NOT EXISTS idx_actions_day_key ON actions(day_key, ts, seq);
 CREATE INDEX IF NOT EXISTS idx_actions_session_uid ON actions(session_uid, seq);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_session ON sessions(source_id, source_session_id);
+CREATE INDEX IF NOT EXISTS idx_diary_posts_ai_kind_day ON diary_posts(ai_name, kind, day_key);
 """
 
 
@@ -360,5 +372,33 @@ def upsert_actions(connection: sqlite3.Connection, actions: list[dict[str, Any]]
             )
             for row in actions
         ),
+    )
+
+
+def upsert_diary_posts(connection: sqlite3.Connection, day_key: str, posts: list[dict[str, Any]]) -> None:
+    connection.executemany(
+        """
+        INSERT INTO diary_posts (
+          day_key, post_index, kind, ai_name, tag, char_count, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(day_key, post_index) DO UPDATE SET
+          kind = excluded.kind,
+          ai_name = excluded.ai_name,
+          tag = excluded.tag,
+          char_count = excluded.char_count,
+          created_at = excluded.created_at
+        """,
+        [
+            (
+                day_key,
+                post["post_index"],
+                post["kind"],
+                post["ai_name"],
+                post["tag"],
+                post["char_count"],
+                now_utc_iso(),
+            )
+            for post in posts
+        ],
     )
 
