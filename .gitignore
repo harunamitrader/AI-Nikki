@@ -12,5 +12,5 @@ reports/soul-analysis/
 inputs/manual/
 generated/
 WORKLOG.md
-docs/codex-improvement-prompt*.md
-docs/review-diary-quality-*.md
+REVIEW.md
+docs/
