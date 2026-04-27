@@ -1,10 +1,16 @@
 __pycache__/
 *.pyc
 .venv/
+*.egg-info/
 config/*.local.json
 config/*.local.md
+config/ai-nikki-personas.md
 data/unified/
 reports/daily/
+reports/diaries/
 reports/soul-analysis/
 inputs/manual/
 generated/
+WORKLOG.md
+docs/codex-improvement-prompt*.md
+docs/review-diary-quality-*.md

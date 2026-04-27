@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,17 @@ def day_key_for_timestamp(value: Any, cutoff_hour: int = 3) -> str | None:
     return local.date().isoformat()
 
 
+def month_key_for_day_key(day_key: str | None) -> str | None:
+    if not day_key:
+        return None
+    return day_key[:7]
+
+
+def month_key_for_timestamp(value: Any, cutoff_hour: int = 3) -> str | None:
+    day_key = day_key_for_timestamp(value, cutoff_hour=cutoff_hour)
+    return month_key_for_day_key(day_key)
+
+
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -95,6 +106,54 @@ def redact_text(text: str) -> str:
     value = str(text or "")
     for pattern in SECRET_PATTERNS:
         value = pattern.sub("[REDACTED]", value)
+    return value
+
+
+def clean_wrapped_user_request(text: str) -> str:
+    value = str(text or "").strip()
+    if "<USER_REQUEST>" in value and "</USER_REQUEST>" in value:
+        match = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", value, flags=re.DOTALL)
+        if match:
+            return match.group(1).strip()
+    return value
+
+
+def strip_noise_lines(text: str) -> str:
+    cleaned_lines: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if line.startswith("<") and line.endswith(">"):
+            continue
+        if lowered.startswith("the current local time is:"):
+            continue
+        if lowered.startswith("the user's current state is as follows:"):
+            continue
+        if lowered.startswith("active document:"):
+            continue
+        if lowered.startswith("other open documents:"):
+            continue
+        if lowered.startswith("cursor is on line:"):
+            continue
+        if lowered.startswith("no browser pages are currently open."):
+            continue
+        if re.match(r"^[A-Za-z]:\\", line):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
+
+
+def compress_whitespace(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def clean_message_text(text: str) -> str:
+    value = clean_wrapped_user_request(str(text or ""))
+    value = strip_noise_lines(value)
+    value = redact_text(value)
+    value = compress_whitespace(value)
     return value
 
 

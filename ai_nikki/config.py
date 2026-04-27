@@ -44,9 +44,21 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
             config = _deep_merge(config, override)
     base_dir = PROJECT_ROOT
     if "paths" in config:
+        paths = config["paths"]
+        if "db_dir" not in paths:
+            legacy_db = paths.get("db")
+            if legacy_db:
+                legacy_path = Path(legacy_db)
+                db_dir = legacy_path.parent / "db"
+            else:
+                db_dir = Path("data") / "unified" / "db"
+            paths["db_dir"] = str(db_dir)
+        paths.pop("db", None)
+        if "published_dir" not in paths:
+            paths["published_dir"] = paths.get("report_dir", "reports\\daily")
         config["paths"] = {
             key: _resolve_path(base_dir, value)
-            for key, value in config["paths"].items()
+            for key, value in paths.items()
         }
     for source in config.get("sources", {}).values():
         source["patterns"] = [

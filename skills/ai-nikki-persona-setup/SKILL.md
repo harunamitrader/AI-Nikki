@@ -29,7 +29,7 @@ python -m ai_nikki prepare-personas --subject-name "ハルナミ"
 
 ## 確認ファイル
 
-- `config\ai-nikki-personas.local.md`
+- `config\ai-nikki-personas.md`
 
 ## ユーザーへの伝え方
 

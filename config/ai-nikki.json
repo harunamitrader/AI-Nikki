@@ -1,14 +1,14 @@
 {
   "day_boundary_hour": 3,
   "paths": {
-    "db": "data\\unified\\ai_logs.sqlite",
+    "db_dir": "data\\unified\\db",
     "daily_dir": "data\\unified\\days",
     "report_dir": "reports\\daily",
+    "published_dir": "reports\\diaries",
     "schedule_dir": "generated\\multicli-schedules",
     "soul_analysis_dir": "reports\\soul-analysis",
     "manual_input_dir": "inputs\\manual",
-    "persona_template_path": "config\\ai-nikki-personas.template.md",
-    "persona_config_path": "config\\ai-nikki-personas.local.md"
+    "persona_path": "config\\ai-nikki-personas.md"
   },
   "schedule": {
     "cron": "0 3 * * *",

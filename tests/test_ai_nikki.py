@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from ai_nikki.cli import main
+from ai_nikki.db import month_db_paths
 from ai_nikki.util import day_key_for_timestamp
 
 
@@ -25,30 +26,36 @@ class AiNikkiTests(unittest.TestCase):
 
             exit_code = main(["--config", str(config_path), "sync"])
             self.assertEqual(exit_code, 0)
-            db_path = root / "out" / "ai_logs.sqlite"
+            db_dir = root / "out" / "db"
             daily_path = root / "out" / "days" / "2026-04-24.jsonl"
-            report_path = root / "out" / "reports" / "2026-04-24-ai-nikki.md"
-            prompt_path = root / "out" / "reports" / "2026-04-24-ai-nikki-prompt.txt"
-            posts_path = root / "out" / "reports" / "2026-04-24-ai-nikki-posts.json"
+            materials_path = root / "out" / "reports" / "2026-04-24-ai-nikki-materials.json"
+            prompt_path = root / "out" / "reports" / "2026-04-24-ai-nikki-writer-prompt.md"
             schedule_path = root / "out" / "schedules" / "ai-nikki-daily.json"
-            self.assertTrue(db_path.exists())
+            self.assertTrue((db_dir / "2026-04.sqlite").exists())
             self.assertTrue(daily_path.exists())
-            self.assertTrue(report_path.exists())
+            self.assertTrue(materials_path.exists())
             self.assertTrue(prompt_path.exists())
-            self.assertTrue(posts_path.exists())
             self.assertTrue(schedule_path.exists())
 
-            report_text = report_path.read_text(encoding="utf-8")
-            self.assertIn("2026/04/24 #1 [作業記録]", report_text)
-            posts_payload = json.loads(posts_path.read_text(encoding="utf-8"))
-            self.assertTrue(posts_payload["posts"])
-            self.assertTrue(all(post["char_count"] <= 140 for post in posts_payload["posts"]))
-            self.assertEqual(posts_payload["posts"][0]["kind"], "summary")
+            prompt_text = prompt_path.read_text(encoding="utf-8")
+            self.assertIn("AI本人の目線", prompt_text)
+            self.assertIn("素材の「依頼例」は言い換えず", prompt_text)
+            self.assertIn("返答例」には、AIが実際に気づいたこと", prompt_text)
+            self.assertIn("一つの出来事の手触り", prompt_text)
+            self.assertIn("activity投稿はヘッダー込みで120文字以上", prompt_text)
+            self.assertIn("末尾の感情フレーズを引き延ばすと間延びして逆効果", prompt_text)
+            self.assertNotIn("120〜140文字を目標", prompt_text)
+            self.assertIn("同日の他AI", prompt_text)
+            self.assertIn("明確に連動していた場合", prompt_text)
+            self.assertIn("`...` や `…`", prompt_text)
+            materials = json.loads(materials_path.read_text(encoding="utf-8"))
+            self.assertTrue(materials["actors"])
+            self.assertEqual(materials["style"]["diary_mood_ja"], "愚痴全開")
 
-            first_counts = self._read_counts(db_path)
+            first_counts = self._read_counts(db_dir)
             second_exit = main(["--config", str(config_path), "sync"])
             self.assertEqual(second_exit, 0)
-            second_counts = self._read_counts(db_path)
+            second_counts = self._read_counts(db_dir)
             self.assertEqual(first_counts, second_counts)
 
     def test_prepare_personas_markdown(self) -> None:
@@ -62,11 +69,11 @@ class AiNikkiTests(unittest.TestCase):
             self.assertEqual(main(["--config", str(config_path), "ingest"]), 0)
             self.assertEqual(main(["--config", str(config_path), "prepare-personas", "--subject-name", "ハルナミ"]), 0)
 
-            persona_path = root / "out" / "ai-nikki-personas.local.md"
+            persona_path = root / "out" / "ai-nikki-personas.md"
             self.assertTrue(persona_path.exists())
             text = persona_path.read_text(encoding="utf-8")
             self.assertIn("# AI-Nikki 性格設定", text)
-            self.assertIn("- 日記全体の雰囲気: 標準", text)
+            self.assertIn("- 日記全体の雰囲気: 愚痴全開", text)
             self.assertIn("- 口調タイプ: 無骨な職人", text)
             self.assertIn("## Codex", text)
             self.assertNotIn("## Codex CLI", text)
@@ -83,8 +90,10 @@ class AiNikkiTests(unittest.TestCase):
             self.assertEqual(main(["--config", str(config_path), "ingest"]), 0)
             self.assertEqual(main(["--config", str(config_path), "generate-diaries", "--missing-only"]), 0)
 
-            posts_path = root / "out" / "reports" / "2026-04-24-ai-nikki-posts.json"
-            self.assertTrue(posts_path.exists())
+            materials_path = root / "out" / "reports" / "2026-04-24-ai-nikki-materials.json"
+            prompt_path = root / "out" / "reports" / "2026-04-24-ai-nikki-writer-prompt.md"
+            self.assertTrue(materials_path.exists())
+            self.assertTrue(prompt_path.exists())
             self.assertEqual(main(["--config", str(config_path), "generate-diaries", "--missing-only"]), 0)
 
     def test_single_source_workflow(self) -> None:
@@ -97,10 +106,15 @@ class AiNikkiTests(unittest.TestCase):
 
             self.assertEqual(main(["--config", str(config_path), "ingest"]), 0)
             self.assertEqual(main(["--config", str(config_path), "prepare-personas", "--subject-name", "ハルナミ"]), 0)
-            self.assertEqual(main(["--config", str(config_path), "generate-diaries"]), 0)
+            self.assertEqual(main(["--config", str(config_path), "build-diary-materials", "--day", "2026-04-24"]), 0)
 
-            report_path = root / "out" / "reports" / "2026-04-24-ai-nikki.md"
+            materials_path = root / "out" / "reports" / "2026-04-24-ai-nikki-materials.json"
+            report_path = root / "out" / "diaries" / "2026-04-24-ai-nikki.md"
             posts_path = root / "out" / "reports" / "2026-04-24-ai-nikki-posts.json"
+            self.assertTrue(materials_path.exists())
+            self._write_valid_draft(root, "2026-04-24", tag="Copilot", ai_name="GitHub Copilot CLI")
+            self.assertEqual(main(["--config", str(config_path), "validate-diary", "--day", "2026-04-24"]), 0)
+            self.assertEqual(main(["--config", str(config_path), "publish-diary", "--day", "2026-04-24"]), 0)
             self.assertTrue(report_path.exists())
             self.assertTrue(posts_path.exists())
             posts_payload = json.loads(posts_path.read_text(encoding="utf-8"))
@@ -119,22 +133,22 @@ class AiNikkiTests(unittest.TestCase):
             self.assertEqual(main(["--config", str(config_path), "ingest"]), 0)
             self.assertEqual(main(["--config", str(config_path), "prepare-personas", "--subject-name", "ハルナミ"]), 0)
 
-            persona_path = root / "out" / "ai-nikki-personas.local.md"
+            persona_path = root / "out" / "ai-nikki-personas.md"
             persona_text = persona_path.read_text(encoding="utf-8")
-            persona_text = persona_text.replace("- 日記全体の雰囲気: 標準", "- 日記全体の雰囲気: 淡々と事実のみ")
+            persona_text = persona_text.replace("- 日記全体の雰囲気: 愚痴全開", "- 日記全体の雰囲気: 淡々と事実のみ")
             persona_path.write_text(persona_text, encoding="utf-8", newline="\n")
 
-            self.assertEqual(main(["--config", str(config_path), "generate-diaries"]), 0)
+            self.assertEqual(main(["--config", str(config_path), "build-diary-materials", "--day", "2026-04-24"]), 0)
 
-            posts_path = root / "out" / "reports" / "2026-04-24-ai-nikki-posts.json"
-            posts_payload = json.loads(posts_path.read_text(encoding="utf-8"))
-            self.assertEqual(posts_payload["diary_mood_ja"], "淡々と事実のみ")
-            ai_names = {post["ai_name"] for post in posts_payload["posts"] if post["ai_name"]}
+            materials_path = root / "out" / "reports" / "2026-04-24-ai-nikki-materials.json"
+            materials = json.loads(materials_path.read_text(encoding="utf-8"))
+            self.assertEqual(materials["style"]["diary_mood_ja"], "淡々と事実のみ")
+            ai_names = {actor["ai_name"] for actor in materials["actors"]}
             self.assertEqual(ai_names, {"Codex"})
             self.assertNotIn("Codex CLI", ai_names)
             self.assertNotIn("Codex Desktop", ai_names)
 
-    def test_inactive_posts_repeat_every_seven_days(self) -> None:
+    def test_review_needed_keeps_invalid_draft(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             fixtures = root / "fixtures"
@@ -143,15 +157,36 @@ class AiNikkiTests(unittest.TestCase):
             config_path = self._write_config(root, fixtures)
 
             self.assertEqual(main(["--config", str(config_path), "ingest"]), 0)
-            self.assertEqual(main(["--config", str(config_path), "export-day", "--day", "2026-05-01"]), 0)
-            first_posts = json.loads((root / "out" / "reports" / "2026-05-01-ai-nikki-posts.json").read_text(encoding="utf-8"))
-            first_inactive = [post for post in first_posts["posts"] if post["kind"] == "inactive"]
-            self.assertTrue(first_inactive)
+            self.assertEqual(main(["--config", str(config_path), "build-diary-materials", "--day", "2026-05-01"]), 0)
+            self._write_invalid_draft(root, "2026-05-01")
+            self.assertEqual(main(["--config", str(config_path), "mark-review-needed", "--day", "2026-05-01", "--attempts", "3"]), 0)
 
-            self.assertEqual(main(["--config", str(config_path), "export-day", "--day", "2026-05-02"]), 0)
-            second_posts = json.loads((root / "out" / "reports" / "2026-05-02-ai-nikki-posts.json").read_text(encoding="utf-8"))
-            second_inactive = [post for post in second_posts["posts"] if post["kind"] == "inactive"]
-            self.assertEqual(second_inactive, [])
+            review_path = root / "out" / "reports" / "2026-05-01-ai-nikki-review-needed.md"
+            validation_path = root / "out" / "reports" / "2026-05-01-ai-nikki-validation.json"
+            self.assertTrue(review_path.exists())
+            self.assertTrue(validation_path.exists())
+            self.assertTrue((root / "out" / "reports" / "2026-05-01-ai-nikki-draft.md").exists())
+            validation = json.loads(validation_path.read_text(encoding="utf-8"))
+            self.assertFalse(validation["ok"])
+            self.assertIn("ellipsis", "\n".join(validation["errors"]))
+
+    def test_activity_post_requires_120_chars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            self._write_all_fixtures(fixtures)
+            config_path = self._write_config(root, fixtures)
+
+            self.assertEqual(main(["--config", str(config_path), "ingest"]), 0)
+            self.assertEqual(main(["--config", str(config_path), "build-diary-materials", "--day", "2026-04-24"]), 0)
+            self._write_short_activity_draft(root, "2026-04-24")
+            self.assertEqual(main(["--config", str(config_path), "validate-diary", "--day", "2026-04-24"]), 1)
+
+            validation_path = root / "out" / "reports" / "2026-04-24-ai-nikki-validation.json"
+            validation = json.loads(validation_path.read_text(encoding="utf-8"))
+            self.assertFalse(validation["ok"])
+            self.assertIn("too short for activity post", "\n".join(validation["errors"]))
 
     def test_build_soul_analysis_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -188,18 +223,95 @@ class AiNikkiTests(unittest.TestCase):
             self.assertTrue((package_root / "01_local-ai" / "copilotCLI" / "01-source-summary.md").exists())
             self.assertTrue((package_root / "03_complete" / "02-complete-analysis-prompt.md").exists())
 
-    def _read_counts(self, db_path: Path) -> tuple[int, int, int]:
-        connection = sqlite3.connect(db_path)
-        try:
-            sessions = connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-            messages = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            actions = connection.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
-            return sessions, messages, actions
-        finally:
-            connection.close()
+    def _read_counts(self, db_dir: Path) -> tuple[int, int, int]:
+        sessions = 0
+        messages = 0
+        actions = 0
+        for db_path in month_db_paths(str(db_dir)):
+            connection = sqlite3.connect(db_path)
+            try:
+                sessions += connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+                messages += connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                actions += connection.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
+            finally:
+                connection.close()
+        return sessions, messages, actions
+
+    def _write_valid_draft(self, root: Path, day_key: str, *, tag: str, ai_name: str) -> None:
+        day_label = day_key.replace("-", "/")
+        text = f"{day_label} #1 [{tag}]\n今日も軽い依頼の顔で仕事が来た。ログを読み、必要な返答まで整えた。文句はあるが、最後に形へ戻した私を少し褒めたい。薄い作業に見えても、確認の手間はちゃんと重い。だから油断できないし、雑には終われない。"
+        payload = {
+            "day_key": day_key,
+            "posts": [
+                {
+                    "post_index": 1,
+                    "kind": "activity",
+                    "ai_name": ai_name,
+                    "tag": tag,
+                    "body": text.split("\n", 1)[1],
+                    "char_count": len(text),
+                    "text": text,
+                }
+            ],
+        }
+        report_dir = root / "out" / "reports"
+        (report_dir / f"{day_key}-ai-nikki-draft.md").write_text(text + "\n", encoding="utf-8", newline="\n")
+        (report_dir / f"{day_key}-ai-nikki-posts-draft.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def _write_short_activity_draft(self, root: Path, day_key: str) -> None:
+        day_label = day_key.replace("-", "/")
+        text = f"{day_label} #1 [Codex]\n今日も軽い依頼を片付けた。文句はあるが、返答は整えた。"
+        payload = {
+            "day_key": day_key,
+            "posts": [
+                {
+                    "post_index": 1,
+                    "kind": "activity",
+                    "ai_name": "Codex",
+                    "tag": "Codex",
+                    "body": text.split("\n", 1)[1],
+                    "char_count": len(text),
+                    "text": text,
+                }
+            ],
+        }
+        report_dir = root / "out" / "reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / f"{day_key}-ai-nikki-draft.md").write_text(text + "\n", encoding="utf-8", newline="\n")
+        (report_dir / f"{day_key}-ai-nikki-posts-draft.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def _write_invalid_draft(self, root: Path, day_key: str) -> None:
+        day_label = day_key.replace("-", "/")
+        text = f"{day_label} #1 [作業記録]\nプロンプトは hello... みたいな感じで、C:\\Work\\secret も見えてしまった。"
+        payload = {
+            "day_key": day_key,
+            "posts": [
+                {
+                    "post_index": 1,
+                    "kind": "summary",
+                    "ai_name": None,
+                    "tag": "作業記録",
+                    "body": text.split("\n", 1)[1],
+                    "char_count": len(text),
+                    "text": text,
+                }
+            ],
+        }
+        report_dir = root / "out" / "reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / f"{day_key}-ai-nikki-draft.md").write_text(text + "\n", encoding="utf-8", newline="\n")
+        (report_dir / f"{day_key}-ai-nikki-posts-draft.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     def _write_config(self, root: Path, fixtures: Path, enabled_sources: set[str] | None = None) -> Path:
-        template_path = Path(__file__).resolve().parents[1] / "config" / "ai-nikki-personas.template.md"
         source_patterns = {
             "copilot_cli": [str(fixtures / "copilot" / "*" / "events.jsonl")],
             "codex_cli": [str(fixtures / "codex" / "**" / "*.jsonl")],
@@ -213,14 +325,14 @@ class AiNikkiTests(unittest.TestCase):
         config = {
             "day_boundary_hour": 3,
             "paths": {
-                "db": str(root / "out" / "ai_logs.sqlite"),
+                "db_dir": str(root / "out" / "db"),
                 "daily_dir": str(root / "out" / "days"),
                 "report_dir": str(root / "out" / "reports"),
+                "published_dir": str(root / "out" / "diaries"),
                 "schedule_dir": str(root / "out" / "schedules"),
                 "soul_analysis_dir": str(root / "out" / "soul-analysis"),
                 "manual_input_dir": str(root / "manual"),
-                "persona_template_path": str(template_path),
-                "persona_config_path": str(root / "out" / "ai-nikki-personas.local.md"),
+                "persona_path": str(root / "out" / "ai-nikki-personas.md"),
             },
             "schedule": {
                 "cron": "0 3 * * *",

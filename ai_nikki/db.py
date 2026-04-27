@@ -4,10 +4,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
-from .util import ensure_parent, now_utc_iso
+from .util import ensure_directory, ensure_parent, month_key_for_day_key, month_key_for_timestamp, now_utc_iso
 
 
-SCHEMA = """
+STATE_SCHEMA = """
 PRAGMA journal_mode=WAL;
 
 CREATE TABLE IF NOT EXISTS sources (
@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
   messages_upserted INTEGER NOT NULL DEFAULT 0,
   actions_upserted INTEGER NOT NULL DEFAULT 0
 );
+"""
+
+
+DATA_SCHEMA = """
+PRAGMA journal_mode=WAL;
 
 CREATE TABLE IF NOT EXISTS sessions (
   session_uid TEXT PRIMARY KEY,
@@ -121,13 +126,86 @@ CREATE INDEX IF NOT EXISTS idx_diary_posts_ai_kind_day ON diary_posts(ai_name, k
 """
 
 
-def connect_db(path: str) -> sqlite3.Connection:
-    db_path = Path(path)
-    ensure_parent(db_path)
-    connection = sqlite3.connect(db_path)
+def _connect_sqlite(path: Path, schema: str) -> sqlite3.Connection:
+    ensure_parent(path)
+    connection = sqlite3.connect(path, timeout=30.0)
     connection.row_factory = sqlite3.Row
-    connection.executescript(SCHEMA)
+    connection.execute("PRAGMA busy_timeout=30000;")
+    connection.executescript(schema)
     return connection
+
+
+def _state_db_path(db_dir: str) -> Path:
+    return Path(db_dir) / "_state.sqlite"
+
+
+def connect_state_db(db_dir: str) -> sqlite3.Connection:
+    db_path = _state_db_path(db_dir)
+    ensure_directory(db_path.parent)
+    return _connect_sqlite(db_path, STATE_SCHEMA)
+
+
+def month_db_path(db_dir: str, month_key: str) -> Path:
+    return Path(db_dir) / f"{month_key}.sqlite"
+
+
+def connect_month_db(db_dir: str, month_key: str) -> sqlite3.Connection:
+    db_path = month_db_path(db_dir, month_key)
+    ensure_directory(db_path.parent)
+    return _connect_sqlite(db_path, DATA_SCHEMA)
+
+
+def connect_day_db(db_dir: str, day_key: str) -> sqlite3.Connection:
+    return connect_month_db(db_dir, month_key_for_day_key(day_key))
+
+
+def month_db_paths(db_dir: str) -> list[Path]:
+    base = Path(db_dir)
+    if not base.exists():
+        return []
+    return sorted(path for path in base.glob("????-??.sqlite") if path.is_file())
+
+
+def month_keys(db_dir: str) -> list[str]:
+    return [path.stem for path in month_db_paths(db_dir)]
+
+
+def available_days(db_dir: str) -> list[str]:
+    days: set[str] = set()
+    for db_path in month_db_paths(db_dir):
+        connection = _connect_sqlite(db_path, DATA_SCHEMA)
+        try:
+            rows = connection.execute(
+                """
+                SELECT day_key
+                FROM (
+                  SELECT day_key FROM messages WHERE day_key IS NOT NULL
+                  UNION
+                  SELECT day_key FROM actions WHERE day_key IS NOT NULL
+                )
+                """
+            ).fetchall()
+            days.update(row[0] for row in rows if row[0])
+        finally:
+            connection.close()
+    return sorted(days)
+
+
+def touched_month_keys(messages: list[dict[str, Any]], actions: list[dict[str, Any]], fallback_ts: str | None = None) -> list[str]:
+    months: set[str] = set()
+    for record in messages:
+        month_key = month_key_for_day_key(record.get("day_key")) if record.get("day_key") else month_key_for_timestamp(record.get("ts"))
+        if month_key:
+            months.add(month_key)
+    for record in actions:
+        month_key = month_key_for_day_key(record.get("day_key")) if record.get("day_key") else month_key_for_timestamp(record.get("ts"))
+        if month_key:
+            months.add(month_key)
+    if not months and fallback_ts:
+        month_key = month_key_for_timestamp(fallback_ts)
+        if month_key:
+            months.add(month_key)
+    return sorted(months)
 
 
 def upsert_source(
@@ -401,4 +479,3 @@ def upsert_diary_posts(connection: sqlite3.Connection, day_key: str, posts: list
             for post in posts
         ],
     )
-
